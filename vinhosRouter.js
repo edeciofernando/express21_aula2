@@ -1,54 +1,25 @@
 const express = require('express');
+const cors = require('cors')
 const multer = require('multer');
+const path = require("path");
 
 const router = express.Router();
+router.use(cors())                // libera todas as rotas para acesso por origens diferentes
 
 const knex = require('./dbConfig');
 
-const upload = multer({ dest: 'fotos/' })
-
 router.get('/', async (req, res) => {
   try {
-    const vinhos = await knex('vinhos').select();
+    const vinhos = await knex('vinhos').orderBy('id', 'desc');     // .select() é opcional
     res.status(200).json(vinhos);
   } catch (error) {
-    res.status(400).json({ ok: 0, msg: `Erro na consulta: ${error.message}` });
-  }
-})
-
-router.post('/', async (req, res) => {
-  const { marca, tipo, preco } = req.body;
-
-  try {
-    const novo = await knex('vinhos').insert({ marca, tipo, preco });
-    res.status(201).json({ ok: 1, msg: 'Inclusão realizada com sucesso...', id: novo[0] });
-  } catch (error) {
-    res.status(400).json({ ok: 0, msg: `Erro na inclusão: ${error.message}` });
-  }
-})
-
-// rota com envio de imagem do vinho (upload com a configuração apenas do diretório de destino)
-router.post('/foto', upload.single('foto'), async (req, res) => {
-
-  // informações que podem ser obtidas do arquivo enviado
-  console.log(req.file.originalname);
-  console.log(req.file.filename);
-  console.log(req.file.mimetype);
-  console.log(req.file.size);
-
-  const { marca, tipo, preco } = req.body;
-
-  try {
-    const novo = await knex('vinhos').insert({ marca, tipo, preco });
-    res.status(201).json({ ok: 1, msg: 'Inclusão realizada com sucesso...', id: novo[0] });
-  } catch (error) {
-    res.status(400).json({ ok: 0, msg: `Erro na inclusão: ${error.message}` });
+    res.status(400).json({ msg: error.message });
   }
 })
 
 // envio de imagem com configurações avançadas
 const storage = multer.diskStorage({
-  destination: (req, file, callback) => callback(null, './fotos'),
+  destination: (req, file, callback) => callback(null, path.resolve(__dirname, "fotos")),
   filename: (req, file, callback) => callback(null, Date.now() + '-' + file.originalname)
 })
 
@@ -57,7 +28,7 @@ const fs = require('fs');
 const upload2 = multer({ storage });
 
 // rota com envio de imagem do vinho
-router.post('/foto2', upload2.single('foto'), async (req, res) => {
+router.post('/', upload2.single('foto'), async (req, res) => {
 
   // informações que podem ser obtidas do arquivo enviado
   console.log(req.file.originalname);
@@ -69,23 +40,87 @@ router.post('/foto2', upload2.single('foto'), async (req, res) => {
   const foto = req.file.path;              // obtém o caminho do arquivo no server
 
   if (!marca || !tipo || !preco || !foto) {
-    res.status(406).json({ ok: 0, msg: 'Informe marca, tipo, preco e foto do vinho' });
+    res.status(400).json({ msg: 'Informe marca, tipo, preco e foto do vinho' });
     return;
   }
 
-  if ( (req.file.mimetype != 'image/jpeg' && req.file.mimetype != 'image/png') || req.file.size > 512*1024) {
+  if ((req.file.mimetype != 'image/jpeg' && req.file.mimetype != 'image/png') || req.file.size > 512 * 1024) {
     fs.unlinkSync(foto);                 // exclui o arquivo do servidor
-    res.status(406).json({ ok: 0, msg: 'Formato inválido da imagem ou imagem muito grande' });
+    res.status(400).json({ msg: 'Formato inválido da imagem ou imagem muito grande' });
     return;
   }
 
   try {
     const novo = await knex('vinhos').insert({ marca, tipo, preco, foto });
-    res.status(201).json({ ok: 1, msg: 'Inclusão realizada com sucesso...', id: novo[0] });
+    res.status(201).json({ id: novo[0] });
   } catch (error) {
-    res.status(400).json({ ok: 0, msg: `Erro na inclusão: ${error.message}` });
+    res.status(400).json({ msg: error.message });
   }
 })
 
+router.delete('/:id', async (req, res) => {     // para exclusão do registro com id informado
+  const id = req.params.id                      // ou: const { id } = req.params
+  try {
+    await knex('vinhos').del().where({ id })      // ou: .where('id', id)
+    res.status(200).json();
+  } catch (error) {
+    res.status(400).json({ msg: error.message });
+  }
+})
+
+router.put('/:id', async (req, res) => {        // para alteração do registro com id informado
+  const id = req.params.id                      // ou: const { id } = req.params
+  const { preco } = req.body
+  try {
+    await knex('vinhos').update({ preco }).where({ id })      // ou: .where('id', id)
+    res.status(200).json();
+  } catch (error) {
+    res.status(400).json({ msg: error.message });
+  }
+})
+
+router.get('/pesq/:palavra', async (req, res) => {
+  const { palavra } = req.params
+  try {
+    const vinhos = await knex('vinhos').where('marca', 'like', `%${palavra}%`)
+      .orWhere('tipo', 'like', `%${palavra}%`);
+    res.status(200).json(vinhos);
+  } catch (error) {
+    res.status(400).json({ msg: error.message });
+  }
+})
+
+router.get('/preco/:inicial/:final?', async (req, res) => {
+  const { inicial, final } = req.params
+  try {
+    let vinhos;
+    if (final) {
+      vinhos = await knex('vinhos').whereBetween('preco', [inicial, final]);
+    } else {
+      vinhos = await knex('vinhos').where('preco', '>=', inicial);
+    }
+    res.status(200).json(vinhos);
+  } catch (error) {
+    res.status(400).json({ msg: error.message });
+  }
+})
+
+router.get('/total', async (req, res) => {
+  try {
+    const consulta = await knex('vinhos')
+      .count({ num: '*' })
+      .sum({ total: 'preco' })
+      .min({ menor: 'preco' })
+      .max({ maior: 'preco' })
+      .avg({ media: 'preco' });
+    res.status(200).json({
+      num: consulta[0].num, total: consulta[0].total,
+      menor: consulta[0].menor, maior: consulta[0].maior,
+      media: Number(consulta[0].media).toFixed(2)
+    });
+  } catch (error) {
+    res.status(400).json({ msg: error.message });
+  }
+})
 
 module.exports = router;
